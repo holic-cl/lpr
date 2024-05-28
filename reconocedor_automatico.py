@@ -20,98 +20,74 @@ import re
 logging.basicConfig()
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
-from twilio.rest import Client
 from dotenv import load_dotenv
 load_dotenv()
+import signal
+import sys
+import atexit
 
 
+def signal_handler(sig, frame):
+    print('You pressed Ctrl+C!')
+    sys.exit(0)
 
-def whatsapp_alert( msj=''):
 
-    if msj =='':
-        return False
-    
-    to_          = os.getenv('whatsapp_number')
-    from_        = os.getenv('whatsapp_number_twilio')
-    
-    account_sid = os.getenv('whastapp_account_sid')
-    auth_token  = os.getenv('whastapp_auth_token')
-    
+def alert( msj=''):
+    print(msj)
 
-    client_twilio = Client(account_sid, auth_token)
-    message             = client_twilio.messages.create(
-            body        = msj,
-            from_       = f'whatsapp:{from_}', # Número de Twilio para enviar mensajes de WhatsApp
-            to          = f'whatsapp:{to_}'
-        )
+
+def release_capture(cap):
+    if cap.isOpened():
+        cap.release()
+        logger.info("Capture released")
     
 
-def main_demo(cfg, demo=True, benchmark=True, save_vid=False):
+def main(cfg, demo=True, benchmark=True, save_vid=False):
 
-    logger.info(f'Leyendo archivo encargos...')
-    encargos = pd.read_csv('patentes_encargos.csv')
-    encargos_list = encargos['PPU'].tolist()
-    encargos_list = [elem.strip() for elem in encargos_list]
-    logger.info(f'Cargadas: {len(encargos_list)} patentes ')
-
+    logger.info(f'Inicializando...')
 
     alpr = ALPR(cfg['modelo'])
     video_path = cfg['video']['fuente']
-    #video_path = 0
     default_width= 640
     default_height = 480
-    cap = cv2.VideoCapture(video_path)
+    cap = cv2.VideoCapture(video_path, cv2.CAP_V4L2)
     cap.set(cv2.CAP_PROP_FRAME_WIDTH, default_width)
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, default_height)
 
+    atexit.register(release_capture, cap)
 
     logger.info(f'Se va analizar la fuente: {video_path}')
     # Cada cuantos frames hacer inferencia
-    cv2.CAP_DSHOW = True
     patentes_detectadas = OrderedDict()
     max_patentes = 10
     avg = 0
-    while True:
+    logger.debug("start loop")
+    count = 0
+    while cap.isOpened():
         return_value, frame = cap.read()
-        if return_value:
-            #frame = cv2.rotate(frame, cv2.ROTATE_90_CLOCKWISE)
-            frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        else:
-            # Descomenten esto para camara IP Esto es por si el stream deja de transmitir algún
-            # frame o se tarda más de lo normal. En este caso simplemente volvemos a intentar leer el frame.
+        count += 30
+        cap.set(cv2.CAP_PROP_POS_FRAMES, count)
+        if not return_value:
             continue
-        
-        frame_w_pred, avg,patente_actual,roi = alpr.mostrar_predicts(frame)
 
+        #frame = cv2.rotate(frame, cv2.ROTATE_90_CLOCKWISE)
+        frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        frame_w_pred, avg,patente_actual, roi = alpr.mostrar_predicts(frame)
         if patente_actual == '':
-            continue
+            continue 
 
-        if avg < cfg['modelo']['confianza_avg_ocr']:
-            continue
+        alert('Patente detectada : ' + patente_actual)
+        # if avg < cfg['modelo']['confianza_avg_ocr']:
+        #     continue
 
         if patente_actual in patentes_detectadas and time.time() - patentes_detectadas[patente_actual] < 120:
             print("La patente {} ya se ha procesado en los últimos 2 minutos.".format(patente_actual))
             continue
         else:
             patentes_detectadas[patente_actual] = time.time()
-
-        if cfg['modelo']['patente_en_csv']:
-
-            if patente_actual in encargos_list :
-                print('****** PATENTE CON ENCARGO *********')
-                print('****** '+patente_actual+' *********')
-
-                if(cfg['modelo']['whatsapp']):
-                    whatsapp_alert('Patente con encargo : '+patente_actual)
-        
-        else:
-            if patente_actual not in encargos_list :
-                print('****** PATENTE NO ENCONTRADA EN LISTADO  *********')
-                print('****** '+patente_actual+' *********')
         
         if len(patentes_detectadas) > max_patentes:
             patentes_detectadas.popitem(last=False)  # Elimina la primera patente ingresada
-
     
 
 
@@ -131,6 +107,8 @@ if __name__ == '__main__':
                 cfg = yaml.safe_load(stream)
             except yaml.YAMLError as exc:
                 logger.exception(exc)
-        main_demo(cfg, args.demo, args.bench)
+        
+        signal.signal(signal.SIGINT, signal_handler)
+        main(cfg, args.demo, args.bench)
     except Exception as e:
         logger.exception(e)

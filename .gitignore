@@ -1,3 +1,6 @@
 /assets
 /tmp
 .env
+/venv
+.gitignore
+*.pyc
